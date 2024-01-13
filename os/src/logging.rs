@@ -1,45 +1,47 @@
-//! Global logger
+use log::{Record, Level, Metadata, Log, LevelFilter};
 
-use log::{self, Level, LevelFilter, Log, Metadata, Record};
-
-/// a simple logger
 struct SimpleLogger;
 
 impl Log for SimpleLogger {
     fn enabled(&self, _metadata: &Metadata) -> bool {
         true
     }
+
     fn log(&self, record: &Record) {
-        if !self.enabled(record.metadata()) {
-            return;
+        if self.enabled(record.metadata()) {
+            let color = match record.level() {
+                Level::Error => 31,
+                Level::Warn => 93,
+                Level::Info => 34,
+                Level::Debug => 32,
+                Level::Trace => 90,
+            };
+            // Ref: <https://docs.rs/log/0.4.19/log/struct.Record.html>
+            println!("\u{1B}[{}m[{:5>}] {}\u{1B}[0m",
+                color,
+                record.level(), /* The verbosity level of the message */
+                record.args() /* The message body */
+            );
         }
-        let color = match record.level() {
-            Level::Error => 31, // Red
-            Level::Warn => 93,  // BrightYellow
-            Level::Info => 34,  // Blue
-            Level::Debug => 32, // Green
-            Level::Trace => 90, // BrightBlack
-        };
-        println!(
-            "\u{1B}[{}m[{:>5}] {}\u{1B}[0m",
-            color,
-            record.level(),
-            record.args(),
-        );
     }
     fn flush(&self) {}
 }
 
-/// initiate logger
 pub fn init() {
     static LOGGER: SimpleLogger = SimpleLogger;
-    log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(match option_env!("LOG") {
-        Some("ERROR") => LevelFilter::Error,
-        Some("WARN") => LevelFilter::Warn,
-        Some("INFO") => LevelFilter::Info,
-        Some("DEBUG") => LevelFilter::Debug,
-        Some("TRACE") => LevelFilter::Trace,
-        _ => LevelFilter::Off,
+    let _ = log::set_logger(&LOGGER).map(|()| {
+        log::set_max_level(match option_env!("LOG") {
+            Some(level) => {
+                match level {
+                    "ERROR" => LevelFilter::Error,
+                    "WARN" => LevelFilter::Warn,
+                    "INFO" => LevelFilter::Info,
+                    "DEBUG" => LevelFilter::Debug,
+                    "TRACE" => LevelFilter::Trace,
+                    _ => LevelFilter::Off,
+                }
+            },
+            None => LevelFilter::Off,
+        });
     });
 }
