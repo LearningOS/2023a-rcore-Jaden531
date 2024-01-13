@@ -1,60 +1,64 @@
-#![no_std] // tell rustc not use the standard library
-#![no_main] // the simplest way to disable the 'start' program to initialize env
-#![feature(panic_info_message)]
-#![feature(strict_provenance)]
-// customized tests
-#![reexport_test_harness_main = "test_main"] // help us create new `main` entry for test
-#![feature(custom_test_frameworks)]
-#![test_runner(test_runner)]
+//! The main module and entrypoint
+//!
+//! Various facilities of the kernels are implemented as submodules. The most
+//! important ones are:
+//!
+//! - [`trap`]: Handles all cases of switching from userspace to the kernel
+//! - [`task`]: Task management
+//! - [`syscall`]: System call handling and implementation
+//!
+//! The operating system also starts in this module. Kernel code starts
+//! executing from `entry.asm`, after which [`rust_main()`] is called to
+//! initialize various pieces of functionality. (See its source code for
+//! details.)
+//!
+//! We then call [`task::run_first_task()`] and for the first time go to
+//! userspace.
 
-#[path = "boards/qemu.rs"]
-mod board;
+#![deny(missing_docs)]
+#![deny(warnings)]
+#![no_std]
+#![no_main]
+#![feature(panic_info_message)]
+#![feature(alloc_error_handler)]
 
 #[macro_use]
-pub mod console;
-mod config;
-mod lang_items;
+extern crate log;
+
+extern crate alloc;
+
+#[macro_use]
+mod console;
+pub mod config;
+mod heap_alloc;
+pub mod lang_items;
 mod loader;
-mod logging;
-mod sbi;
-mod sync;
+pub mod logging;
+pub mod sbi;
+pub mod sync;
 pub mod syscall;
 pub mod task;
+pub mod timer;
 pub mod trap;
-mod timer;
-// ch2-problems
-mod stack_btrace;
 
-use log::*;
-use core::arch::global_asm;
+core::arch::global_asm!(include_str!("entry.asm"));
+core::arch::global_asm!(include_str!("link_app.S"));
 
-global_asm!(include_str!("entry.asm"));
-global_asm!(include_str!("link_app.S"));
-
+/// clear BSS segment
 fn clear_bss() {
     extern "C" {
-        static mut sbss: u64;
-        static mut ebss: u64;
+        fn sbss();
+        fn ebss();
     }
-
     unsafe {
-        (sbss as usize..ebss as usize).for_each(|ptr|{
-                // use volatile to avoid compiler optimization
-                (ptr as *mut u8).write_volatile(0);
-            }
-        );
+        core::slice::from_raw_parts_mut(sbss as usize as *mut u8, ebss as usize - sbss as usize)
+            .fill(0);
     }
 }
 
-#[no_mangle] // avoid compiler confusion
-fn rust_main() {
-    clear_bss();
-
-    logging::init();
-
+/// kernel log info
+fn kernel_log_info() {
     extern "C" {
-        fn skernel();
-        fn ekernel();
         fn stext(); // begin addr of text segment
         fn etext(); // end addr of text segment
         fn srodata(); // start addr of Read-Only data segment
@@ -63,41 +67,41 @@ fn rust_main() {
         fn edata(); // end addr of data segment
         fn sbss(); // start addr of BSS segment
         fn ebss(); // end addr of BSS segment
-        fn _start();
         fn boot_stack_lower_bound(); // stack lower bound
         fn boot_stack_top(); // stack top
     }
-
-    info!("=> .text [{:#x}, {:#x})", stext as usize, etext as usize);
-
-    info!("=> .rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
-
-    info!("=> .data [{:#x}, {:#x})", sdata as usize, edata as usize);
-
-    info!("=> .bss [{:#x}, {:#x})", sbss as usize, ebss as usize);
-
-    info!("kernel load range: [{:#x}, {:#x}] start={:#x}",
-        skernel as usize, ekernel as usize, _start as usize);
-
+    logging::init();
+    println!("[kernel] Hello, world!");
+    trace!(
+        "[kernel] .text [{:#x}, {:#x})",
+        stext as usize,
+        etext as usize
+    );
+    debug!(
+        "[kernel] .rodata [{:#x}, {:#x})",
+        srodata as usize, erodata as usize
+    );
     info!(
-        "boot_stack top/bottom={:#x}, lower_bound={:#x}",
-        boot_stack_top as usize, boot_stack_lower_bound as usize);
+        "[kernel] .data [{:#x}, {:#x})",
+        sdata as usize, edata as usize
+    );
+    warn!(
+        "[kernel] boot_stack top=bottom={:#x}, lower_bound={:#x}",
+        boot_stack_top as usize, boot_stack_lower_bound as usize
+    );
+    error!("[kernel] .bss [{:#x}, {:#x})", sbss as usize, ebss as usize);
+}
 
-    println!("Hello, world!");
+#[no_mangle]
+/// the rust entry-point of os
+pub fn rust_main() -> ! {
+    clear_bss();
+    kernel_log_info();
+    heap_alloc::init_heap();
     trap::init();
     loader::load_apps();
     trap::enable_timer_interrupt();
     timer::set_next_trigger();
     task::run_first_task();
     panic!("Unreachable in rust_main!");
-}
-
-#[cfg(test)] // ensure this function only runs in test scenario
-pub fn test_runner(tests: &[&dyn Fn()]) {
-    println!("Running {} tests", tests.len());
-    for test in tests {
-        test();
-    }
-    // use crate::board::QEMUExit;
-    // crate::board::QEMU_EXIT_HANDLE.exit_success(); // CI autotest success
 }

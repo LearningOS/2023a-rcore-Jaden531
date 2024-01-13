@@ -1,4 +1,5 @@
-// synchronize in uni-processor
+//! Synchronization and interior mutability primitives
 
 mod up;
+
 pub use up::UPSafeCell;
