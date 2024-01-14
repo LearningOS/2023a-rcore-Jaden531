@@ -17,6 +17,9 @@ mod task;
 use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::syscall::process::TaskInfo;
+use crate::task::task::TaskInfoInner;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -54,6 +57,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_info_inner: TaskInfoInner::new(),
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +139,27 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn set_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_id = inner.current_task;
+        inner.tasks[current_id].task_info_inner.syscall_times[syscall_id] += 1;
+    }
+
+    fn get_current_task_info(&self, ti: *mut TaskInfo) {
+        let inner = self.inner.exclusive_access();
+        let current_id = inner.current_task;
+        let TaskInfoInner {syscall_times, start_time} = inner.tasks[current_id].task_info_inner;
+
+        unsafe {
+            *ti = TaskInfo {
+                status: TaskStatus::Running,
+                syscall_times,
+                time: get_time_ms() - start_time,
+            };
+        }
+    }
+
 }
 
 /// Run the first task in task list.
@@ -168,4 +193,12 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+pub fn record_syscall(syscall_id: usize) {
+    TASK_MANAGER.set_syscall_times(syscall_id);
+}
+
+pub fn get_task_info(ti: *mut TaskInfo) {
+    TASK_MANAGER.get_current_task_info(ti);
 }
