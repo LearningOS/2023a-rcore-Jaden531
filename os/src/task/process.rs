@@ -49,6 +49,20 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// if deadlock detect
+    pub deadlock_detect: bool,
+    /// mutex_allocation[i] = j means ith mutex is occupied by jth thread
+    pub mutex_allocation: Vec<Option<usize>>,
+    /// mutex_need[j] = i means jth thread needs ith mutex
+    pub mutex_need: Vec<Option<usize>>,
+
+    /// semaphore_available
+    pub semaphore_available: Vec<usize>,
+    /// semaphore_allocation[i,j] = 
+    pub semaphore_allocation: Vec<Vec<usize>>,
+    /// semaphore_need
+    pub semaphore_need: Vec<Vec<usize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +133,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_allocation: Vec::new(),
+                    mutex_need: vec![None],
+                    semaphore_available: Vec::new(),
+                    semaphore_allocation: vec![Vec::new()],
+                    semaphore_need: vec![Vec::new()],
                 })
             },
         });
@@ -245,6 +265,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_allocation: Vec::new(),
+                    mutex_need: vec![None],
+                    semaphore_available: Vec::new(),
+                    semaphore_allocation: vec![Vec::new()],
+                    semaphore_need: vec![Vec::new()],
                 })
             },
         });
@@ -281,5 +307,103 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+}
+impl ProcessControlBlock {
+    pub fn mutex_deadlock_detect(&self, tid: usize, mutex_id: usize) -> bool {
+        let mut inner = self.inner_exclusive_access();
+        inner.mutex_need[tid] = Some(mutex_id);
+        if inner.deadlock_detect {
+            let mut work: Vec<bool> = inner.mutex_allocation.iter().map(|&x| matches!(x, None)).collect();
+            let mutex_number = work.len();
+            let len = inner.thread_count();
+            let mut finish = vec![false; len];
+            for _ in 0..len {
+                let mut flag = true;
+                for i in 0..len {                    
+                    if !finish[i] {
+                        if let Some(x) = inner.mutex_need[i] {
+                            if work[x] {
+                                finish[i] = true;
+                                flag = false;
+                                for j in 0..mutex_number {
+                                    if let Some(y) = inner.mutex_allocation[j] {
+                                        if y == i {
+                                            work[j] = true;
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        } else {
+                            finish[i] = true;
+                            flag = false;
+                            for j in 0..mutex_number {
+                                if let Some(y) = inner.mutex_allocation[j] {
+                                    if y == i {
+                                        work[j] = true;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        
+                    }
+                }
+                if flag {
+                    inner.mutex_need[tid] = None;
+                    return true;
+                }
+            }
+            false
+        } else {
+            false
+        }
+    }
+    
+    pub fn semaphore_deadlock_detect(&self, tid: usize, sem_id: usize) -> bool {
+        let mut inner = self.inner_exclusive_access();
+        inner.semaphore_need[tid][sem_id] += 1;
+        if inner.deadlock_detect {
+            let len = inner.thread_count();
+            let sem_len = inner.semaphore_available.len();
+            if sem_len == 0 {
+                return false;
+            }
+            let mut work = inner.semaphore_available.clone();
+            let mut finish = vec![false; len];
+            for _ in 0..len {
+                let mut deadlock = true;
+                for i in 0..len {
+                    if !finish[i] {
+                        let mut flag = true;
+                        //找到一个可以need可以被满足的进程
+                        for (j, g) in inner.semaphore_need[i].iter().enumerate() {
+                            if *g > work[j] {
+                                flag = false;
+                                break;
+                            }
+                        }
+                        //找到了
+                        if flag {
+                            //println!("find {}", i);
+                            finish[i] = true;
+                            deadlock = false;
+                            for (j, g) in inner.semaphore_allocation[i].iter().enumerate() {
+                                work[j] += g;
+                            }
+                            break;
+                        }
+                    }
+                }
+                if deadlock {
+                    inner.semaphore_need[tid][sem_id] -= 1;
+                    return true;
+                }
+            }
+            false
+        } else {
+            false
+        }
     }
 }
